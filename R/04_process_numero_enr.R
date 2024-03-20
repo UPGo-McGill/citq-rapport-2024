@@ -7,30 +7,29 @@ library(lubridate)
 
 # Load data ---------------------------------------------------------------
 
-mto_inactive <- read_xlsx("data/mto_inactive.xlsx")
-mto_active <- read_xlsx("data/mto_active.xlsx")
+mto <- read_xlsx("data/mto_2024_03.xlsx", 
+                 col_types = c(rep("text", 10), "guess"))
 mto_august <- read_xlsx("data/mto_august.xlsx")
+mto_inactive <- read_xlsx("data/mto_inactive.xlsx")
 
-mto_inactive <- head(mto_inactive, -2)
-mto_active <- head(mto_active, -2)
-mto_august <- head(mto_august, -2)
 
 # Clean and merge databases -----------------------------------------------------
 
-mto_inactive <- 
-  mto_inactive |> 
+mto <- 
+  mto |> 
   as_tibble() |> 
   set_names(c("id", "name", "type", "subtype", "subdivision",
               "civic_number", "street_name", "municipality",
-              "postal_code", "owner", "start_license", "end_license")) |> 
-  mutate(start_license = as_date(start_license),
-         end_license = as_date(end_license),
+              "postal_code", "owner", "start_license")) |> 
+  mutate(start_license = as_datetime(start_license),
          address = str_c(civic_number, street_name, sep = " "),
          address = str_c(address, municipality, postal_code, sep = ", ")) |> 
   select(-civic_number, -street_name) |> 
-  select(id, name, address, municipality, type, subtype, owner, 
-         start_license, end_license, postal_code) |> 
-  mutate(active = FALSE)
+  select(id, name, address, municipality, type, subtype, owner, postal_code, 
+         start_license) |> 
+  mutate(end_license = NA) |> 
+  mutate(end_license = as.Date(end_license)) |> 
+  mutate(active = TRUE)
 
 mto_august <- 
   mto_august |> 
@@ -49,40 +48,42 @@ mto_august <-
   select(id, name, address, municipality, type, subtype, owner, 
          start_license, postal_code) |>
   mutate(end_license = NA) |> 
-  mutate(end_license = as.Date(end_license)) |> 
-  mutate(active = TRUE)
+  mutate(end_license = as.Date(end_license))
 
-mto_active_MARCH <- 
-  mto_active |> 
+# If active in August but not anymore in March, set active = FALSE
+mto <- 
+  mto_august |> 
+  filter(!id %in% mto$id) |> 
+  mutate(active = FALSE) |> 
+  bind_rows(mto)
+
+mto_inactive <- 
+  mto_inactive |> 
+  head(-2) |> 
   as_tibble() |> 
   set_names(c("id", "name", "type", "subtype", "subdivision",
               "civic_number", "street_name", "municipality",
-              "postal_code", "owner", "start_license")) |> 
+              "postal_code", "owner", "start_license", "end_license")) |> 
   mutate(start_license = as_date(start_license),
+         end_license = as_date(end_license),
          address = str_c(civic_number, street_name, sep = " "),
          address = str_c(address, municipality, postal_code, sep = ", ")) |> 
-  select(-civic_number, -street_name) |>
+  select(-civic_number, -street_name) |> 
   select(id, name, address, municipality, type, subtype, owner, 
-         start_license, postal_code) |>
-  mutate(end_license = NA) |> 
-  mutate(end_license = as.Date(end_license)) |> 
-  mutate(active = TRUE)
-
-# If active in March but not anymore in August, passed to active = FALSE
-mto_active_MARCH$active[!mto_active_MARCH$id %in% mto_august$id] <- FALSE
-
-mto <- rbind(mto_august, mto_active_MARCH, mto_inactive)
-
-rm(mto_august, mto_active_MARCH, mto_inactive)
-
-mto <- 
-  mto |>
+         start_license, end_license, postal_code) |> 
+  mutate(active = FALSE) |> 
   distinct(id, .keep_all = TRUE)
 
+mto <- 
+  mto_inactive |> 
+  filter(!id %in% mto$id) |> 
+  bind_rows(mto) |> 
+  arrange(id)
+
 mto$postal_code <- tolower(mto$postal_code)
+
 
 # Save output -------------------------------------------------------------
 
 qsave(mto, file = "output/mto.qs")
-
-rm(mto_active)
+rm(mto_august, mto_inactive)
