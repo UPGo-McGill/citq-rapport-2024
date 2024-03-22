@@ -132,42 +132,37 @@ illegally_shared_licences <- function(property, abl_df) {
 #' minimum stays, and with valid, expired, fake, and illegally shared licences.
 get_values <- function(property_IDs, abl_df, illegally_shared = illegally_shared,
                        valid_licences, expired_licences) {
+  
   scraped <- abl_df[abl_df$property_ID %in% property_IDs, ]
-  nb_in_db <- nrow(scraped)
-  
-  nb_previously_str <- property[property$property_ID %in% scraped$property_ID &
-                                  property$min_stay < 31, ] |> nrow()
-  
+
   # From all the properties that were accessible through the web since January 1st,
   # this is the percentage of properties that were still accessible
   still_active <- scraped[scraped$exists, ]
-  nb_still_exists <- nrow(still_active)
-  pct_still_exists <- nrow(still_active) / nrow(scraped)
-  
-  nb_taken_down <- nb_in_db - nb_still_exists
-  pct_taken_down <- abs(1 - pct_still_exists)
-  
+
   # Used to be >= 31 minimum stays
   property_still_active <- 
-    property[property$property_ID %in% still_active$property_ID, ]
-  pct_used_to_be_long_term <- 
-    sum(property_still_active$min_stay >= 31, na.rm = TRUE) / nrow(property_still_active)
-  
+    property |> 
+    filter(property_ID %in% still_active$property_ID)
+
   # From the still active properties, this many now have a min stay >= 31.
-  min_stay_merged <- left_join(still_active, property[c("property_ID", "min_stay")])
+  min_stay_merged <- 
+    still_active |> 
+    left_join(select(property, property_ID, min_stay))
   
   # Either there is no registration and so the listing moved to long term, or if
   # it is VRBO it hasn't changed. If it was long term, it's still long term even
   # though there is no registration number (no purge there)
   long_term_index <- min_stay_merged$min_stay >= 31
   
-  
-  new_long_term <- still_active[long_term_index, ]
-  nb_long_term <- nrow(new_long_term)
-  pct_new_long_term <- nb_long_term / nrow(still_active)
+  long_term <- still_active[long_term_index, ]
+  nb_long_term <- nrow(long_term)
+  pct_long_term <- nb_long_term / nrow(still_active)
   
   # Display any string in the licence number or is from VRBO and is NOT long term there
-  str <- still_active[!long_term_index, ]
+  str <- 
+    still_active |> 
+    filter(!long_term_index)
+  
   nb_short_term <- nrow(str)
   pct_short_term <- nb_short_term / nrow(still_active)
   
@@ -178,12 +173,6 @@ get_values <- function(property_IDs, abl_df, illegally_shared = illegally_shared
   # How many are NOT displaying a licence
   nb_display_nothing <- sum(is.na(str$licence) & is.na(str$licence_wrong_spot))
   pct_display_nothing <- nb_display_nothing / nrow(str)
-  
-  # How many are NOT displaying a licence and are on Airbnb
-  nb_display_nothing_ab <- sum(
-    is.na(str[str_starts(str$property_ID, "ab-"),]$licence) & 
-      is.na(str[str_starts(str$property_ID, "ab-"),]$licence_wrong_spot))
-  pct_display_nothing_ab <- nb_display_nothing_ab / nrow(str)
   
   # Of all the listings, no matter where they place the registration number, how
   # many are valid
@@ -204,16 +193,23 @@ get_values <- function(property_IDs, abl_df, illegally_shared = illegally_shared
   
   pct_display_expired_fake <- sum(pct_display_expired, pct_display_fake)
 
+  # # Properties with valid licences that are > 5000m from the registered address
+  # str |> 
+  #   filter(valid) |> 
+  #   filter(permit_dist > 5000)
+  
   # The number of licences operating multiple properties that are >410m away
   # from each other
   nb_illegally_shared_licences <- 
     illegally_shared$licence[illegally_shared$licence %in% str$licence] |> 
     unique() |> 
     length()
+  
   nb_illegally_shared_properties <- 
     illegally_shared$properties[illegally_shared$properties %in% str$property_ID] |> 
     unique() |> 
     length()
+  
   pct_illegally_shared <- nb_illegally_shared_properties / nrow(str)
   
   # Conform
@@ -222,21 +218,14 @@ get_values <- function(property_IDs, abl_df, illegally_shared = illegally_shared
   pct_conform <- nb_conform / nrow(str)
   
   # Return all
-  return(list(nb_in_db = nb_in_db,
-              nb_previously_str = nb_previously_str,
-              nb_still_exists = nb_still_exists,
-              pct_still_exists = pct_still_exists,
-              pct_used_to_be_long_term = pct_used_to_be_long_term,
-              nb_long_term = nb_long_term,
-              pct_new_long_term = pct_new_long_term,
-              nb_short_term = nb_short_term,
+  return(list(nb_short_term = nb_short_term,
               pct_short_term = pct_short_term,
+              nb_long_term = nb_long_term,
+              pct_long_term = pct_long_term,
               nb_valid_wrong_spot = nb_valid_wrong_spot,
               pct_valid_wrong_spot = pct_valid_wrong_spot,
               nb_display_nothing = nb_display_nothing,
               pct_display_nothing = pct_display_nothing,
-              nb_display_nothing_ab = nb_display_nothing_ab,
-              pct_display_nothing_ab = pct_display_nothing_ab,
               nb_display_valid = nb_display_valid,
               pct_display_valid = pct_display_valid,
               nb_display_expired = nb_display_expired,
@@ -244,6 +233,8 @@ get_values <- function(property_IDs, abl_df, illegally_shared = illegally_shared
               nb_display_fake = nb_display_fake,
               pct_display_fake = pct_display_fake,
               pct_display_expired_fake = pct_display_expired_fake,
+              # nb_dist_too_far = nb_dist_too_far,
+              # pct_dist_too_far = pct_dist_too_far,
               nb_illegally_shared_licences = nb_illegally_shared_licences,
               nb_illegally_shared_properties = nb_illegally_shared_properties,
               pct_illegally_shared = pct_illegally_shared,

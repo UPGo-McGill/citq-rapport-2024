@@ -5,15 +5,10 @@
 source("R/01_startup.R")
 source("R/functions/permit_compliance.R")
 
-# Airbnb licenses in chronological order
-abl_1 <- qread("data/ab_lic_2023_03.qs")
-abl_2 <- qread("data/ab_lic_2023_08.qs")
-abl_2$property_ID <- sprintf("ab-%s", abl_2$property_ID)
-abl_3 <- qread("data/ab_lic_sept_09.qs")
-abl_4 <- qread("output/ab_lic_2024_03.qs", nthreads = availableCores())
+# Airbnb licenses
+abl <- qread("output/ab_lic_2024_03.qs", nthreads = availableCores())
 
 property_new <- qs::qread("output/property.qs")
-property_old <- qread("data/property_old.qs")
 mto <- qs::qread("output/mto.qs")
 
 
@@ -24,35 +19,14 @@ property <-
   mutate(ab_property = str_remove(property_ID, "ab-"),
          ha_property = NA_character_)
 
-property <- 
-  property_old |> 
-  anti_join(property, by = "property_ID") |> 
-  bind_rows(property) |> 
-  arrange(property_ID)
-
 
 # Process data ------------------------------------------------------------
-
-# In a list with the `ab-` we can recognise from the `property` db
-abl <- list(march = abl_1, august = abl_2, september = abl_3)
-
-# Licence number scraped regex
-licence_regex <- "(Licence number  .*,$)|(Registration number  .*$)"
-licence_regex_grab <- 
-  "((?<=Licence number  ).*(?=,$))|(?<=Registration number  ).*(?=$)"
 
 valid_licences <- mto$id[mto$active]
 expired_licences <- mto$id[!mto$active]
 
-abl <- lapply(abl, append_licence, valid_licences = valid_licences,
-              expired_licences = expired_licences, 
-              licence_regex_grab = licence_regex_grab)
-
-
-# Get licenses for new data -----------------------------------------------
-
-abl$march_2024 <- 
-  abl_4 |> 
+abl <- 
+  abl |> 
   select(-double_check) |> 
   mutate(property_ID = paste0("ab-", property_ID)) |> 
   mutate(description = description |> 
@@ -68,30 +42,38 @@ abl$march_2024 <-
   mutate(valid = licence %in% valid_licences) |> 
   mutate(expired = licence %in% expired_licences)
 
+# Join with property and mto
+abl <- 
+  abl |> 
+  inner_join(select(property, property_ID, listing_type, latitude:min_stay)) |> 
+  left_join(select(mto, licence = id, mto_geom = geometry)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(mto))
 
-# Process merged data -----------------------------------------------------
 
-illegally_shared_aug <- 
-  illegally_shared_licences(property = property, abl_df = abl$august)
+# Find distance from STR to permit ----------------------------------------
 
-illegally_shared_sept <- 
-  illegally_shared_licences(property = property, abl_df = abl$september)
+abl <- 
+  abl |> 
+  mutate(geometry = st_transform(geometry, 3347),
+         mto_geom = st_transform(mto_geom, 3347)) |> 
+  mutate(permit_dist = map2_dbl(geometry, mto_geom, st_distance)) |> 
+  st_drop_geometry() |> 
+  select(-mto_geom)
+
+
+# Process data ------------------------------------------------------------
 
 illegally_shared_march <- 
-  illegally_shared_licences(property = property, abl_df = abl$march_2024)
+  illegally_shared_licences(property = property, abl_df = abl)
 
-# Properties active since February
-properties_existed_feb <- property$property_ID[property$scraped > "2024-02-01"]
-
-z <- get_values(property_IDs = properties_existed_feb,
-                abl_df = abl$march_2024,
+z <- get_values(property_IDs = property$property_ID,
+                abl_df = abl,
                 illegally_shared = illegally_shared_march, 
                 valid_licences = valid_licences,
                 expired_licences = expired_licences)
 
-
 # Get some fake licences examples
-abl$march_2024 |> 
+abl |> 
   filter(!is.na(licence)) |> 
   filter(!licence %in% mto$id) |> 
   arrange(licence)
@@ -103,12 +85,16 @@ abl$march_2024 |>
 
 # Confirm all STR show a registration number ------------------------------
 
-str_pr <- property$property_ID[property$min_stay < 31]
+str_pr <- 
+  property |> 
+  filter(min_stay < 31) |> 
+  pull(property_ID)
 str_pr <- str_pr[!is.na(str_pr)]
 
-str_licences <- 
-  abl$march_2024 |> 
-  filter(property_ID %in% str_pr, !is.na(description))
+str_licences <-
+  abl |> 
+    filter(exists) |> 
+    filter(property_ID %in% str_pr, !is.na(description))
 
 str_licences |> 
   filter(is.na(licence))
@@ -136,7 +122,7 @@ property_new |>
   nrow()
 
 # Scraped
-abl_4 |> 
+abl |> 
   filter(exists) |> 
   nrow()
 
@@ -146,14 +132,14 @@ z$pct_short_term
 
 # LTR
 z$nb_long_term
-z$pct_new_long_term
+z$pct_long_term
 
 # Missing licence
 z$nb_display_nothing
 z$pct_display_nothing
 
 # Double check these
-abl$march_2024 |> 
+abl |> 
   filter(exists) |> 
   filter(property_ID %in% property_new$property_ID[property_new$min_stay < 31]) |> 
   filter(is.na(licence))
@@ -233,7 +219,7 @@ ids_per_type$`All properties` <- Reduce(c, ids_per_type)
 ids_per_type <- ids_per_type[c(5,1:4)]
 
 properties_type <- 
-  lapply(ids_per_type, get_values, abl_df = abl$march_2024,
+  lapply(ids_per_type, get_values, abl_df = abl,
          illegally_shared = illegally_shared_march, valid_licences = valid_licences,
          expired_licences = expired_licences)
 
@@ -275,9 +261,10 @@ properties_type$`Type de propriété` <-
 all_properties_type <- properties_type
 
 # Count of listings in March
-list_count <- 
+list_count <-
   property |> 
   filter(min_stay < 31, scraped >= "2024-02-01") |> 
+  filter(property_ID %in% abl$property_ID[abl$exists]) |> 
   count(listing_type) |> 
   summarize(n = sum(n)) |> 
   bind_rows(property |> 
